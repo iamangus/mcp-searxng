@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const Version = "0.10.5"
@@ -24,6 +25,7 @@ type Config struct {
 	SearchHTTPSProxy    string
 	URLReaderHTTPProxy  string
 	URLReaderHTTPSProxy string
+	AIACacheTTL         time.Duration
 }
 
 func Load() (*Config, error) {
@@ -74,6 +76,13 @@ func Load() (*Config, error) {
 		os.Getenv("URL_READER_HTTPS_PROXY"),
 		os.Getenv("url_reader_https_proxy"),
 	)
+
+	cfg.AIACacheTTL = 24 * time.Hour
+	if ttlStr := os.Getenv("AIA_CACHE_TTL"); ttlStr != "" {
+		if d, err := time.ParseDuration(ttlStr); err == nil {
+			cfg.AIACacheTTL = d
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err

@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler, urlCache, err := server.NewHTTPHandler(cfg)
+	handler, urlCache, certCache, err := server.NewHTTPHandler(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create server: %s\n", err)
 		os.Exit(1)
@@ -58,6 +58,7 @@ func main() {
 	}
 
 	urlCache.Stop()
+	certCache.Stop()
 
 	fmt.Fprintln(os.Stderr, "Server stopped")
 }

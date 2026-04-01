@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/iamangus/mcp-searxng/internal/aia"
 	"github.com/iamangus/mcp-searxng/internal/cache"
 	"github.com/iamangus/mcp-searxng/internal/config"
 	"github.com/iamangus/mcp-searxng/internal/logging"
@@ -18,22 +18,22 @@ import (
 	"github.com/iamangus/mcp-searxng/internal/urlreader"
 )
 
-func NewMCPServer(cfg *config.Config, urlCache *cache.Cache) (*mcpserver.MCPServer, error) {
+func NewMCPServer(cfg *config.Config, urlCache *cache.Cache, certCache *aia.CertCache) (*mcpserver.MCPServer, error) {
 	s := mcpserver.NewMCPServer(
-		"ihor-sokoliuk/mcp-searxng",
+		"iamangus/mcp-searxng",
 		config.Version,
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithLogging(),
 		mcpserver.WithRecovery(),
 	)
 
-	registerTools(s, cfg, urlCache)
+	registerTools(s, cfg, urlCache, certCache)
 	registerResources(s, cfg)
 
 	return s, nil
 }
 
-func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.Cache) {
+func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.Cache, certCache *aia.CertCache) {
 	webSearchTool := mcp.NewTool("searxng_web_search",
 		mcp.WithDescription(
 			"Performs a web search using the SearXNG API, ideal for general queries, news, articles, and online content. "+
@@ -92,7 +92,7 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			}
 		}
 
-		result, err := search.PerformWebSearch(ctx, cfg, search.SearchParams{
+		result, err := search.PerformWebSearch(ctx, cfg, certCache, search.SearchParams{
 			Query:      query,
 			PageNo:     pageNo,
 			TimeRange:  timeRange,
@@ -168,7 +168,7 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			opts.ReadHeadings, _ = v.(bool)
 		}
 
-		result, err := urlreader.FetchAndConvertToMarkdown(ctx, cfg, urlCache, targetURL, 10000, opts)
+		result, err := urlreader.FetchAndConvertToMarkdown(ctx, cfg, urlCache, certCache, targetURL, 10000, opts)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -188,7 +188,7 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 	s.AddResource(configResource, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		configData := map[string]any{
 			"serverInfo": map[string]any{
-				"name":        "ihor-sokoliuk/mcp-searxng",
+				"name":        "iamangus/mcp-searxng",
 				"version":     config.Version,
 				"description": "MCP server for SearXNG integration",
 			},
@@ -226,51 +226,40 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 	)
 
 	s.AddResource(helpResource, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		helpText := `# SearXNG MCP Server Help
-
-## Overview
-This is a Model Context Protocol (MCP) server that provides web search capabilities through SearXNG and URL content reading functionality.
-
-## Available Tools
-
-### 1. searxng_web_search
-Performs web searches using the configured SearXNG instance.
-
-**Parameters:**
-- ` + "`query`" + ` (required): The search query string
-- ` + "`pageno`" + ` (optional): Page number (default: 1)
-- ` + "`time_range`" + ` (optional): Filter by time - "day", "month", or "year"
-- ` + "`language`" + ` (optional): Language code like "en", "fr", "de" (default: "all")
-- ` + "`safesearch`" + ` (optional): Safe search level - 0 (none), 1 (moderate), 2 (strict)
-
-### 2. web_url_read
-Reads and converts web page content to Markdown format.
-
-**Parameters:**
-- ` + "`url`" + ` (required): The URL to fetch and convert
-
-## Configuration
-
-### Required Environment Variables
-- ` + "`SEARXNG_URL`" + `: URL of your SearXNG instance (e.g., http://localhost:8080)
-- ` + "`MCP_HTTP_PORT`" + `: HTTP port for the MCP server (e.g., 3000)
-
-### Optional Environment Variables
-- ` + "`AUTH_USERNAME`" + ` & ` + "`AUTH_PASSWORD`" + `: Basic authentication for SearXNG
-- ` + "`HTTP_PROXY`" + ` / ` + "`HTTPS_PROXY`" + `: Proxy server configuration
-- ` + "`NO_PROXY`" + ` / ` + "`no_proxy`" + `: Comma-separated list of hosts to bypass proxy
-- ` + "`USER_AGENT`" + `: Global User-Agent header
-- ` + "`URL_READER_USER_AGENT`" + `: User-Agent for URL reader (overrides USER_AGENT)
-
-## Troubleshooting
-
-1. **"SEARXNG_URL not set"**: Configure the SEARXNG_URL environment variable
-2. **Network errors**: Check if SearXNG is running and accessible
-3. **Empty results**: Try different search terms or check SearXNG instance
-4. **Timeout errors**: The server has a 10-second timeout for URL fetching
-
-Use logging level "debug" for detailed request information.
-`
+		helpText := "# SearXNG MCP Server Help\n\n" +
+			"## Overview\n" +
+			"This is a Model Context Protocol (MCP) server that provides web search capabilities through SearXNG and URL content reading functionality.\n\n" +
+			"## Available Tools\n\n" +
+			"### 1. searxng_web_search\n" +
+			"Performs web searches using the configured SearXNG instance.\n\n" +
+			"**Parameters:**\n" +
+			"- `query` (required): The search query string\n" +
+			"- `pageno` (optional): Page number (default: 1)\n" +
+			"- `time_range` (optional): Filter by time - \"day\", \"month\", or \"year\"\n" +
+			"- `language` (optional): Language code like \"en\", \"fr\", \"de\" (default: \"all\")\n" +
+			"- `safesearch` (optional): Safe search level - 0 (none), 1 (moderate), 2 (strict)\n\n" +
+			"### 2. web_url_read\n" +
+			"Reads and converts web page content to Markdown format.\n\n" +
+			"**Parameters:**\n" +
+			"- `url` (required): The URL to fetch and convert\n\n" +
+			"## Configuration\n\n" +
+			"### Required Environment Variables\n" +
+			"- `SEARXNG_URL`: URL of your SearXNG instance (e.g., http://localhost:8080)\n" +
+			"- `MCP_HTTP_PORT`: HTTP port for the MCP server (e.g., 3000)\n\n" +
+			"### Optional Environment Variables\n" +
+			"- `AUTH_USERNAME` & `AUTH_PASSWORD`: Basic authentication for SearXNG\n" +
+			"- `HTTP_PROXY` / `HTTPS_PROXY`: Proxy server configuration\n" +
+			"- `NO_PROXY` / `no_proxy`: Comma-separated list of hosts to bypass proxy\n" +
+			"- `USER_AGENT`: Global User-Agent header\n" +
+			"- `URL_READER_USER_AGENT`: User-Agent for URL reader (overrides USER_AGENT)\n" +
+			"- `AIA_CACHE_TTL`: Cache TTL for AIA intermediate certificates (default: 24h)\n\n" +
+			"## Troubleshooting\n\n" +
+			"1. **\"SEARXNG_URL not set\"**: Configure the SEARXNG_URL environment variable\n" +
+			"2. **Network errors**: Check if SearXNG is running and accessible\n" +
+			"3. **Empty results**: Try different search terms or check SearXNG instance\n" +
+			"4. **Timeout errors**: The server has a 10-second timeout for URL fetching\n" +
+			"5. **SSL errors**: Server uses AIA chasing to fetch missing intermediate certificates automatically\n\n" +
+			"Use logging level \"debug\" for detailed request information.\n"
 
 		return []mcp.ResourceContents{
 			mcp.TextResourceContents{
@@ -282,27 +271,19 @@ Use logging level "debug" for detailed request information.
 	})
 }
 
-func NewHTTPServer(cfg *config.Config) (*mcpserver.StreamableHTTPServer, *cache.Cache, error) {
+func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, *aia.CertCache, error) {
 	urlCache := cache.NewCache(60 * time.Second)
+	certCache := aia.NewCertCache(cfg.AIACacheTTL)
 
-	mcpSrv, err := NewMCPServer(cfg, urlCache)
+	mcpSrv, err := NewMCPServer(cfg, urlCache, certCache)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create MCP server: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create MCP server: %w", err)
 	}
 
 	streamableServer := mcpserver.NewStreamableHTTPServer(mcpSrv,
 		mcpserver.WithStateful(true),
 		mcpserver.WithEndpointPath("/mcp"),
 	)
-
-	return streamableServer, urlCache, nil
-}
-
-func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, error) {
-	streamableServer, urlCache, err := NewHTTPServer(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamableServer)
@@ -314,15 +295,11 @@ func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, error) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":    "healthy",
-			"server":    "ihor-sokoliuk/mcp-searxng",
+			"server":    "iamangus/mcp-searxng",
 			"version":   config.Version,
 			"transport": "http",
 		})
 	})
 
-	return mux, urlCache, nil
-}
-
-func formatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', 3, 64)
+	return mux, urlCache, certCache, nil
 }

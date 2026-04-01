@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iamangus/mcp-searxng/internal/aia"
 	"github.com/iamangus/mcp-searxng/internal/config"
 	mcperrors "github.com/iamangus/mcp-searxng/internal/errors"
 	"github.com/iamangus/mcp-searxng/internal/logging"
@@ -36,7 +38,7 @@ type SearchParams struct {
 	SafeSearch int
 }
 
-func PerformWebSearch(ctx context.Context, cfg *config.Config, params SearchParams) (string, error) {
+func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.CertCache, params SearchParams) (string, error) {
 	startTime := time.Now()
 
 	searchParts := []string{
@@ -90,6 +92,9 @@ func PerformWebSearch(ctx context.Context, cfg *config.Config, params SearchPara
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: proxy.GetProxyFunc(proxy.Search),
+			TLSClientConfig: &tls.Config{
+				VerifyPeerCertificate: certCache.VerifyPeerCertificate,
+			},
 		},
 	}
 

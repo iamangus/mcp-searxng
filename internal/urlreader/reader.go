@@ -2,6 +2,7 @@ package urlreader
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 
+	"github.com/iamangus/mcp-searxng/internal/aia"
 	"github.com/iamangus/mcp-searxng/internal/cache"
 	"github.com/iamangus/mcp-searxng/internal/config"
 	mcperrors "github.com/iamangus/mcp-searxng/internal/errors"
@@ -21,6 +23,7 @@ func FetchAndConvertToMarkdown(
 	ctx context.Context,
 	cfg *config.Config,
 	urlCache *cache.Cache,
+	certCache *aia.CertCache,
 	targetURL string,
 	timeoutMs int,
 	opts PaginationOptions,
@@ -47,10 +50,15 @@ func FetchAndConvertToMarkdown(
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: proxy.GetProxyFunc(proxy.URLReader),
+	transport := &http.Transport{
+		Proxy: proxy.GetProxyFunc(proxy.URLReader),
+		TLSClientConfig: &tls.Config{
+			VerifyPeerCertificate: certCache.VerifyPeerCertificate,
 		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
