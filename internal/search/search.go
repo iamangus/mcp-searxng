@@ -93,6 +93,7 @@ func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.Ce
 		Transport: &http.Transport{
 			Proxy: proxy.GetProxyFunc(proxy.Search),
 			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify:    true,
 				VerifyPeerCertificate: certCache.VerifyPeerCertificate,
 			},
 		},

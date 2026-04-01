@@ -53,6 +53,7 @@ func FetchAndConvertToMarkdown(
 	transport := &http.Transport{
 		Proxy: proxy.GetProxyFunc(proxy.URLReader),
 		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify:    true,
 			VerifyPeerCertificate: certCache.VerifyPeerCertificate,
 		},
 	}
