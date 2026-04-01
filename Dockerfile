@@ -1,23 +1,23 @@
-FROM node:lts-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-COPY ./ /app
+COPY go.mod go.sum ./
+RUN go mod download
 
-RUN --mount=type=cache,target=/root/.npm npm run bootstrap
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /mcp-searxng .
 
-FROM node:lts-alpine AS release
+FROM alpine:3.21
 
-RUN apk update && apk upgrade
+RUN apk update && apk upgrade && apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/dist /app/dist
-COPY --from=builder /app/package.json /app/package.json
-COPY --from=builder /app/package-lock.json /app/package-lock.json
+COPY --from=builder /mcp-searxng /app/mcp-searxng
 
-ENV NODE_ENV=production
+ENV MCP_HTTP_PORT=3000
 
-RUN npm ci --ignore-scripts --omit-dev
+EXPOSE 3000
 
-ENTRYPOINT ["node", "dist/index.js"]
+ENTRYPOINT ["/app/mcp-searxng"]

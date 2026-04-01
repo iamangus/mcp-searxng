@@ -1,35 +1,39 @@
-# Build outputs
-dist/
-build/
+# Binaries
+mcp-searxng
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Development files
-node_modules/
-npm-debug.log
-yarn-debug.log
-yarn-error.log
+# Test
+*.test
+*.out
+*.prof
 
-# Editor directories and files
-.idea/
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-.roo/
-
-# Git files
+# Git
 .git/
 .github/
 .gitignore
 
-# Docker files
+# Docker
 .dockerignore
 Dockerfile
 
-# Other
+# Editor
+.idea/
+.vscode/
+.roo/
+
+# OS
 .DS_Store
-*.log
-coverage/
+Thumbs.db
+
+# Environment
 .env
 *.env.local
+
+# Other
+*.log
+coverage/
+README.md
+LICENSE
