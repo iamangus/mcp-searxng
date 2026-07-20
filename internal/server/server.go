@@ -281,7 +281,7 @@ func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, *aia.CertCa
 	}
 
 	streamableServer := mcpserver.NewStreamableHTTPServer(mcpSrv,
-		mcpserver.WithStateful(false),
+		mcpserver.WithStateLess(true),
 		mcpserver.WithEndpointPath("/mcp"),
 	)
 
