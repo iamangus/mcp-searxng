@@ -2,20 +2,18 @@ package search
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/iamangus/mcp-searxng/internal/aia"
 	"github.com/iamangus/mcp-searxng/internal/config"
 	mcperrors "github.com/iamangus/mcp-searxng/internal/errors"
 	"github.com/iamangus/mcp-searxng/internal/logging"
+	"github.com/iamangus/mcp-searxng/internal/netclient"
 	"github.com/iamangus/mcp-searxng/internal/proxy"
 )
 
@@ -27,7 +25,12 @@ type SearXNGResult struct {
 }
 
 type SearXNGResponse struct {
-	Results []SearXNGResult `json:"results"`
+	Results             []SearXNGResult   `json:"results"`
+	Suggestions         []string          `json:"suggestions,omitempty"`
+	Answers             []json.RawMessage `json:"answers,omitempty"`
+	UnresponsiveEngines []json.RawMessage `json:"unresponsive_engines,omitempty"`
+	Truncated           bool              `json:"truncated"`
+	PageNo              int               `json:"page"`
 }
 
 type SearchParams struct {
@@ -38,8 +41,25 @@ type SearchParams struct {
 	SafeSearch int
 }
 
-func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.CertCache, params SearchParams) (string, error) {
+type Client struct {
+	cfg  *config.Config
+	http *http.Client
+}
+
+func NewClient(cfg *config.Config) *Client {
+	return &Client{cfg: cfg, http: netclient.NewTrusted(proxy.NewFunc(cfg, proxy.Search))}
+}
+
+func (c *Client) Close() { c.http.CloseIdleConnections() }
+
+func (c *Client) Search(ctx context.Context, params SearchParams) (*SearXNGResponse, error) {
+	cfg := c.cfg
 	startTime := time.Now()
+	if strings.TrimSpace(params.Query) == "" || len(params.Query) > 8192 || params.PageNo < 1 || params.PageNo > 100 || params.SafeSearch < 0 || params.SafeSearch > 2 || (params.TimeRange != "" && !isValidTimeRange(params.TimeRange)) {
+		return nil, fmt.Errorf("invalid search parameters")
+	}
+	ctx, cancel := context.WithTimeout(ctx, netclient.Timeout)
+	defer cancel()
 
 	searchParts := []string{
 		fmt.Sprintf("page %d", params.PageNo),
@@ -53,21 +73,21 @@ func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.Ce
 	}
 
 	logging.LogMessage(logging.Info,
-		fmt.Sprintf("Starting web search: %q (%s)", params.Query, strings.Join(searchParts, ", ")))
+		fmt.Sprintf("Starting web search (%s)", strings.Join(searchParts, ", ")))
 
 	searxngURL := cfg.SearXNGURL
 	if searxngURL == "" {
-		return "", mcperrors.NewConfigurationError("SEARXNG_URL not set")
+		return nil, mcperrors.NewConfigurationError("SEARXNG_URL not set")
 	}
 
 	baseURL, err := url.Parse(searxngURL)
 	if err != nil {
-		return "", mcperrors.NewConfigurationError(fmt.Sprintf("Invalid SEARXNG_URL format: %s", searxngURL))
+		return nil, mcperrors.NewConfigurationError("Invalid SEARXNG_URL")
 	}
 
 	searchURL := baseURL.JoinPath("search")
 	if searchURL == nil {
-		return "", mcperrors.NewConfigurationError(fmt.Sprintf("Invalid SEARXNG_URL format: %s", searxngURL))
+		return nil, mcperrors.NewConfigurationError("Invalid SEARXNG_URL")
 	}
 
 	q := searchURL.Query()
@@ -86,22 +106,9 @@ func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.Ce
 	}
 	searchURL.RawQuery = q.Encode()
 
-	logging.LogMessage(logging.Info,
-		fmt.Sprintf("Making request to: %s", searchURL.String()))
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: proxy.GetProxyFunc(proxy.Search),
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify:    true,
-				VerifyPeerCertificate: certCache.VerifyPeerCertificate,
-			},
-		},
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL.String(), nil)
 	if err != nil {
-		return "", mcperrors.NewNetworkError(err, searchURL.String(), searxngURL)
+		return nil, fmt.Errorf("cannot create search request")
 	}
 
 	if cfg.HasAuth() {
@@ -112,49 +119,97 @@ func PerformWebSearch(ctx context.Context, cfg *config.Config, certCache *aia.Ce
 		req.Header.Set("User-Agent", cfg.UserAgent)
 	}
 
-	resp, err := client.Do(req)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", mcperrors.NewNetworkError(err, searchURL.String(), searxngURL)
+		return nil, fmt.Errorf("search request failed (network, TLS, redirect or timeout)")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", mcperrors.NewServerError(resp.StatusCode, resp.Status, string(body), searxngURL)
+		return nil, mcperrors.NewServerError(resp.StatusCode, http.StatusText(resp.StatusCode), "", searxngURL)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := netclient.ReadBody(resp.Body)
 	if err != nil {
-		return "", mcperrors.NewJSONError("")
+		return nil, err
 	}
 
 	var data SearXNGResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		return "", mcperrors.NewJSONError(string(body))
+		return nil, mcperrors.NewJSONError("")
 	}
 
 	if data.Results == nil {
-		return "", mcperrors.NewDataError()
-	}
-
-	results := data.Results
-	if len(results) == 0 {
-		logging.LogMessage(logging.Info,
-			fmt.Sprintf("No results found for query: %q", params.Query))
-		return mcperrors.NewNoResultsMessage(params.Query), nil
+		return nil, mcperrors.NewDataError()
 	}
 
 	duration := time.Since(startTime)
 	logging.LogMessage(logging.Info,
-		fmt.Sprintf("Search completed: %q - %d results in %dms", params.Query, len(results), duration.Milliseconds()))
+		fmt.Sprintf("Search completed: %d results in %dms", len(data.Results), duration.Milliseconds()))
+	data.PageNo = params.PageNo
+	// Bound structured output as well as the text fallback.
+	data.Truncated = len(data.Results) > 20
+	if len(data.Results) > 20 {
+		data.Results = data.Results[:20]
+	}
+	for i := range data.Results {
+		r := &data.Results[i]
+		r.Title = truncate(r.Title, 500, &data.Truncated)
+		r.Content = truncate(r.Content, 1000, &data.Truncated)
+		r.URL = truncate(r.URL, 2048, &data.Truncated)
+	}
+	// These fields are useful diagnostics but must not bypass the output cap.
+	if len(data.Suggestions) > 10 {
+		data.Suggestions = data.Suggestions[:10]
+		data.Truncated = true
+	}
+	for i := range data.Suggestions {
+		data.Suggestions[i] = truncate(data.Suggestions[i], 500, &data.Truncated)
+	}
+	if len(data.Answers) > 10 {
+		data.Answers = data.Answers[:10]
+		data.Truncated = true
+	}
+	for i, raw := range data.Answers {
+		if len(raw) > 1024 {
+			data.Answers[i] = json.RawMessage(`"answer omitted: exceeds size limit"`)
+			data.Truncated = true
+		}
+	}
+	if len(data.UnresponsiveEngines) > 20 {
+		data.UnresponsiveEngines = data.UnresponsiveEngines[:20]
+		data.Truncated = true
+	}
+	for i, raw := range data.UnresponsiveEngines {
+		if len(raw) > 1024 {
+			data.UnresponsiveEngines[i] = json.RawMessage(`"engine diagnostic omitted"`)
+			data.Truncated = true
+		}
+	}
+	return &data, nil
+}
 
+func (data *SearXNGResponse) Text() string {
+	if len(data.Results) == 0 {
+		return "No search results found. Check engine diagnostics or try another query."
+	}
 	var parts []string
-	for _, r := range results {
+	for _, r := range data.Results {
 		parts = append(parts, fmt.Sprintf("Title: %s\nDescription: %s\nURL: %s\nRelevance Score: %.3f",
 			r.Title, r.Content, r.URL, r.Score))
 	}
 
-	return strings.Join(parts, "\n\n"), nil
+	return strings.Join(parts, "\n\n")
+}
+
+func truncate(s string, limit int, truncated *bool) string {
+	r := []rune(s)
+	if len(r) > limit {
+		*truncated = true
+		return string(r[:limit])
+	}
+	return s
 }
 
 func isValidTimeRange(tr string) bool {

@@ -1,10 +1,42 @@
 package cache
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestCapacityAndReplacementAccounting(t *testing.T) {
+	c := NewCache(time.Minute)
+	defer c.Stop()
+	for i := 0; i < MaxEntries+10; i++ {
+		c.Set(fmt.Sprint(i), "", "value")
+	}
+	if len(c.entries) != MaxEntries {
+		t.Fatal(len(c.entries))
+	}
+	c.Clear()
+	value := strings.Repeat("x", MaxBytes/3)
+	for i := 0; i < 5; i++ {
+		c.Set(fmt.Sprint(i), "", value)
+	}
+	if c.bytes > MaxBytes || len(c.entries) > 2 {
+		t.Fatal("cache exceeded byte budget")
+	}
+	c.Set("same", "", "hello")
+	c.Set("same", "", "x")
+	actual := 0
+	for k, e := range c.entries {
+		actual += len(k) + len(e.HTMLContent) + len(e.MarkdownContent)
+	}
+	if actual != c.bytes {
+		t.Fatalf("accounted %d, actual %d", c.bytes, actual)
+	}
+	c.Stop()
+	c.Stop()
+}
 
 func TestNewCache(t *testing.T) {
 	c := NewCache(time.Minute)

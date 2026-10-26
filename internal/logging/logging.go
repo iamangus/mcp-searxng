@@ -1,7 +1,9 @@
 package logging
 
 import (
+	"context"
 	"log/slog"
+	"os"
 	"sync"
 )
 
@@ -19,6 +21,7 @@ var logLevels = []LogLevel{Debug, Info, Warning, Error}
 var (
 	currentLevel LogLevel = Info
 	levelMu      sync.RWMutex
+	logger       = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 )
 
 func SetLogLevel(level LogLevel) {
@@ -68,5 +71,5 @@ func LogMessage(level LogLevel, message string) {
 		slogLevel = slog.LevelInfo
 	}
 
-	slog.Log(nil, slogLevel, message)
+	logger.Log(context.Background(), slogLevel, message)
 }

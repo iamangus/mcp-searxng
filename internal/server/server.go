@@ -10,40 +10,46 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/iamangus/mcp-searxng/internal/aia"
 	"github.com/iamangus/mcp-searxng/internal/cache"
 	"github.com/iamangus/mcp-searxng/internal/config"
 	"github.com/iamangus/mcp-searxng/internal/logging"
+	"github.com/iamangus/mcp-searxng/internal/netclient"
 	"github.com/iamangus/mcp-searxng/internal/search"
 	"github.com/iamangus/mcp-searxng/internal/urlreader"
 )
 
-func NewMCPServer(cfg *config.Config, urlCache *cache.Cache, certCache *aia.CertCache) (*mcpserver.MCPServer, error) {
+func NewMCPServer(cfg *config.Config, searchClient *search.Client, reader *urlreader.Reader) (*mcpserver.MCPServer, error) {
 	s := mcpserver.NewMCPServer(
 		"iamangus/mcp-searxng",
 		config.Version,
 		mcpserver.WithToolCapabilities(false),
-		mcpserver.WithLogging(),
+		mcpserver.WithResourceCapabilities(false, false),
+		mcpserver.WithInputSchemaValidation(),
+		mcpserver.WithToolResultSizeLimit(1<<20),
 		mcpserver.WithRecovery(),
 	)
 
-	registerTools(s, cfg, urlCache, certCache)
+	registerTools(s, searchClient, reader)
 	registerResources(s, cfg)
 
 	return s, nil
 }
 
-func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.Cache, certCache *aia.CertCache) {
+func registerTools(s *mcpserver.MCPServer, searchClient *search.Client, reader *urlreader.Reader) {
 	webSearchTool := mcp.NewTool("searxng_web_search",
+		mcp.WithSchemaAdditionalProperties(false),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithDescription(
 			"Performs a web search using the SearXNG API, ideal for general queries, news, articles, and online content. "+
 				"Use this for broad information gathering, recent events, or when you need diverse web sources.",
 		),
 		mcp.WithString("query",
 			mcp.Required(),
+			mcp.MinLength(1), mcp.MaxLength(8192),
 			mcp.Description("The search query. This is the main input for the web search"),
 		),
-		mcp.WithNumber("pageno",
+		mcp.WithInteger("pageno", mcp.Min(1), mcp.Max(100),
 			mcp.Description("Search page number (starts at 1)"),
 		),
 		mcp.WithString("time_range",
@@ -51,9 +57,10 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			mcp.Enum("day", "month", "year"),
 		),
 		mcp.WithString("language",
+			mcp.MinLength(1), mcp.MaxLength(64),
 			mcp.Description("Language code for search results (e.g., 'en', 'fr', 'de'). Default is instance-dependent."),
 		),
-		mcp.WithNumber("safesearch",
+		mcp.WithInteger("safesearch", mcp.Min(0), mcp.Max(2),
 			mcp.Description("Safe search filter level (0: None, 1: Moderate, 2: Strict)"),
 		),
 	)
@@ -92,7 +99,7 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			}
 		}
 
-		result, err := search.PerformWebSearch(ctx, cfg, certCache, search.SearchParams{
+		result, err := searchClient.Search(ctx, search.SearchParams{
 			Query:      query,
 			PageNo:     pageNo,
 			TimeRange:  timeRange,
@@ -103,28 +110,34 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(result), nil
+		return mcp.NewToolResultStructured(result, result.Text()), nil
 	})
 
 	readURLTool := mcp.NewTool("web_url_read",
+		mcp.WithSchemaAdditionalProperties(false),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithDescription(
 			"Read the content from an URL. "+
 				"Use this for further information retrieving to understand the content of each URL.",
 		),
 		mcp.WithString("url",
 			mcp.Required(),
-			mcp.Description("URL"),
+			mcp.MinLength(1), mcp.MaxLength(8192),
+			mcp.Description("Public HTTP(S) URL; private destinations and non-web ports are blocked"),
 		),
-		mcp.WithNumber("startChar",
+		mcp.WithInteger("startChar", mcp.Min(0), mcp.Max(10000000),
 			mcp.Description("Starting character position for content extraction (default: 0)"),
 		),
-		mcp.WithNumber("maxLength",
-			mcp.Description("Maximum number of characters to return"),
+		mcp.WithInteger("maxLength", mcp.Min(1), mcp.Max(netclient.MaxOutputChars),
+			mcp.Description("Maximum Unicode code points to return (default 10000; maximum 50000)"),
 		),
 		mcp.WithString("section",
+			mcp.MaxLength(512),
 			mcp.Description("Extract content under a specific heading (searches for heading text)"),
 		),
 		mcp.WithString("paragraphRange",
+			mcp.MaxLength(32), mcp.Pattern(`^[1-9][0-9]*(?:-[1-9][0-9]*|-)?$`),
 			mcp.Description("Return specific paragraph ranges (e.g., '1-5', '3', '10-')"),
 		),
 		mcp.WithBoolean("readHeadings",
@@ -168,12 +181,12 @@ func registerTools(s *mcpserver.MCPServer, cfg *config.Config, urlCache *cache.C
 			opts.ReadHeadings, _ = v.(bool)
 		}
 
-		result, err := urlreader.FetchAndConvertToMarkdown(ctx, cfg, urlCache, certCache, targetURL, 10000, opts)
+		result, err := reader.Read(ctx, targetURL, opts)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(result), nil
+		return mcp.NewToolResultStructured(result, result.Content), nil
 	})
 }
 
@@ -193,7 +206,6 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 				"description": "MCP server for SearXNG integration",
 			},
 			"environment": map[string]any{
-				"searxngUrl":      cfg.SearXNGURL,
 				"hasAuth":         cfg.HasAuth(),
 				"hasProxy":        cfg.HasProxy(),
 				"hasNoProxy":      cfg.HasNoProxy(),
@@ -201,7 +213,7 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 			},
 			"capabilities": map[string]any{
 				"tools":      []string{"searxng_web_search", "web_url_read"},
-				"logging":    true,
+				"logging":    false,
 				"resources":  true,
 				"transports": []string{"http"},
 			},
@@ -252,14 +264,14 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 			"- `NO_PROXY` / `no_proxy`: Comma-separated list of hosts to bypass proxy\n" +
 			"- `USER_AGENT`: Global User-Agent header\n" +
 			"- `URL_READER_USER_AGENT`: User-Agent for URL reader (overrides USER_AGENT)\n" +
-			"- `AIA_CACHE_TTL`: Cache TTL for AIA intermediate certificates (default: 24h)\n\n" +
 			"## Troubleshooting\n\n" +
 			"1. **\"SEARXNG_URL not set\"**: Configure the SEARXNG_URL environment variable\n" +
 			"2. **Network errors**: Check if SearXNG is running and accessible\n" +
 			"3. **Empty results**: Try different search terms or check SearXNG instance\n" +
-			"4. **Timeout errors**: The server has a 10-second timeout for URL fetching\n" +
-			"5. **SSL errors**: Server uses AIA chasing to fetch missing intermediate certificates automatically\n\n" +
-			"Use logging level \"debug\" for detailed request information.\n"
+			"4. **Timeout errors**: Upstream requests have a 15-second deadline\n" +
+			"5. **SSL errors**: Fix the upstream certificate chain; normal hostname and trust verification is required\n" +
+			"6. **Blocked URL**: URL reading permits only public destinations on ports 80 and 443\n\n" +
+			"URL output is capped at 10000 Unicode code points by default (maximum 50000). Structured results include totalChars, truncated and nextStartChar. Reuse the same filters when continuing.\n"
 
 		return []mcp.ResourceContents{
 			mcp.TextResourceContents{
@@ -271,24 +283,32 @@ func registerResources(s *mcpserver.MCPServer, cfg *config.Config) {
 	})
 }
 
-func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, *aia.CertCache, error) {
+func NewHTTPHandler(cfg *config.Config) (http.Handler, func(), error) {
 	urlCache := cache.NewCache(60 * time.Second)
-	certCache := aia.NewCertCache(cfg.AIACacheTTL)
+	searchClient := search.NewClient(cfg)
+	reader := urlreader.NewReader(cfg, urlCache)
+	cleanup := func() { urlCache.Stop(); searchClient.Close(); reader.Close() }
 
-	mcpSrv, err := NewMCPServer(cfg, urlCache, certCache)
+	mcpSrv, err := NewMCPServer(cfg, searchClient, reader)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create MCP server: %w", err)
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to create MCP server: %w", err)
 	}
 
 	streamableServer := mcpserver.NewStreamableHTTPServer(mcpSrv,
 		mcpserver.WithStateLess(true),
+		// Exact Host/Origin validation is performed by modernOnly on all
+		// interfaces, including loopback reverse-proxy connections.
+		mcpserver.WithDisableLocalhostProtection(true),
+		mcpserver.WithStreamableHTTPProtocolVersions(mcp.ProtocolVersion20260728),
 		mcpserver.WithEndpointPath("/mcp"),
 	)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", streamableServer)
+	mux.Handle("/mcp", modernOnly(cfg, streamableServer))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -301,5 +321,5 @@ func NewHTTPHandler(cfg *config.Config) (http.Handler, *cache.Cache, *aia.CertCa
 		})
 	})
 
-	return mux, urlCache, certCache, nil
+	return mux, cleanup, nil
 }

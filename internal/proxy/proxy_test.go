@@ -3,10 +3,22 @@ package proxy_test
 import (
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/iamangus/mcp-searxng/internal/proxy"
 )
+
+func TestMain(m *testing.M) {
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.Contains(strings.ToUpper(key), "PROXY") {
+			os.Unsetenv(key)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func TestShouldBypassProxy_NoProxyNotSet(t *testing.T) {
 	t.Setenv("NO_PROXY", "")

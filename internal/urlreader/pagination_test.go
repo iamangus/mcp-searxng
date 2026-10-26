@@ -1,10 +1,45 @@
 package urlreader_test
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/iamangus/mcp-searxng/internal/urlreader"
 )
+
+func TestUnicodeAndOverflow(t *testing.T) {
+	if got := urlreader.ApplyCharacterPagination("a🌍你好z", 1, 3); got != "🌍你好" {
+		t.Fatal(got)
+	}
+	if got := urlreader.ApplyCharacterPagination("hello", 1, int(^uint(0)>>1)); got != "ello" {
+		t.Fatal(got)
+	}
+	for _, bounds := range []string{"4-1", "3-0", "1-9999999999999999999999999", "9999999999999999999999999"} {
+		if got := urlreader.ExtractParagraphRange("one\n\ntwo\n\nthree\n\nfour", bounds); got != "" {
+			t.Fatalf("%q: %q", bounds, got)
+		}
+	}
+}
+
+func FuzzPagination(f *testing.F) {
+	f.Add("one\n\ntwo\n\nthree", "3-1", 1, 10)
+	f.Add("🌍你好", "9999999999999999999999999", 1, 1)
+	f.Fuzz(func(t *testing.T, content, bounds string, start, length int) {
+		if len(content) > 4096 || len(bounds) > 100 {
+			t.Skip()
+		}
+		if !utf8.ValidString(content) {
+			t.Skip()
+		}
+		got := urlreader.ApplyCharacterPagination(content, start, length)
+		if !utf8.ValidString(got) {
+			t.Fatal("split UTF-8")
+		}
+		urlreader.ExtractParagraphRange(content, bounds)
+		urlreader.ExtractSection(content, strings.TrimSpace(bounds))
+	})
+}
 
 func TestApplyCharacterPagination(t *testing.T) {
 	content := "Hello, World! This is a test string."

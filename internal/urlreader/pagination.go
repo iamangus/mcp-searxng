@@ -3,6 +3,7 @@ package urlreader
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -17,7 +18,8 @@ type PaginationOptions struct {
 }
 
 func ApplyCharacterPagination(content string, startChar int, maxLength int) string {
-	if startChar >= len(content) {
+	runes := []rune(content)
+	if startChar >= len(runes) {
 		return ""
 	}
 
@@ -27,19 +29,19 @@ func ApplyCharacterPagination(content string, startChar int, maxLength int) stri
 	}
 
 	if maxLength > 0 {
-		end := start + maxLength
-		if end > len(content) {
-			end = len(content)
-		}
-		return content[start:end]
+		length := min(maxLength, len(runes)-start)
+		return string(runes[start : start+length])
 	}
 
-	return content[start:]
+	return string(runes[start:])
 }
 
 func ExtractSection(markdownContent string, sectionHeading string) string {
 	lines := strings.Split(markdownContent, "\n")
-	sectionRegex := regexp.MustCompile(`(?i)^#{1,6}\s*.*` + regexp.QuoteMeta(sectionHeading) + `.*$`)
+	sectionRegex, err := regexp.Compile(`(?i)^#{1,6}\s*.*` + regexp.QuoteMeta(sectionHeading) + `.*$`)
+	if err != nil {
+		return ""
+	}
 
 	startIndex := -1
 	currentLevel := 0
@@ -47,7 +49,7 @@ func ExtractSection(markdownContent string, sectionHeading string) string {
 	for i, line := range lines {
 		if sectionRegex.MatchString(line) {
 			startIndex = i
-			headingPrefix := regexp.MustCompile(`^#+`)
+			headingPrefix := headingPrefixRegex
 			match := headingPrefix.FindString(line)
 			currentLevel = len(match)
 			break
@@ -61,7 +63,7 @@ func ExtractSection(markdownContent string, sectionHeading string) string {
 	endIndex := len(lines)
 	for i := startIndex + 1; i < len(lines); i++ {
 		line := lines[i]
-		headingMatch := regexp.MustCompile(`^#+`).FindString(line)
+		headingMatch := headingPrefixRegex.FindString(line)
 		if len(headingMatch) > 0 && len(headingMatch) <= currentLevel {
 			endIndex = i
 			break
@@ -74,13 +76,16 @@ func ExtractSection(markdownContent string, sectionHeading string) string {
 func ExtractParagraphRange(markdownContent string, rangeStr string) string {
 	paragraphs := filterParagraphs(markdownContent)
 
-	rangeRegex := regexp.MustCompile(`^(\d+)(?:-(\d*))?$`)
 	matches := rangeRegex.FindStringSubmatch(rangeStr)
 	if matches == nil {
 		return ""
 	}
 
-	start := atoi(matches[1]) - 1
+	first, err := strconv.Atoi(matches[1])
+	if err != nil || first < 1 {
+		return ""
+	}
+	start := first - 1
 	endStr := matches[2]
 
 	if start < 0 || start >= len(paragraphs) {
@@ -95,7 +100,10 @@ func ExtractParagraphRange(markdownContent string, rangeStr string) string {
 		return strings.Join(paragraphs[start:], "\n\n")
 	}
 
-	end := atoi(endStr)
+	end, err := strconv.Atoi(endStr)
+	if err != nil || end < first {
+		return ""
+	}
 	if end > len(paragraphs) {
 		end = len(paragraphs)
 	}
@@ -104,7 +112,6 @@ func ExtractParagraphRange(markdownContent string, rangeStr string) string {
 
 func ExtractHeadings(markdownContent string) string {
 	lines := strings.Split(markdownContent, "\n")
-	headingRegex := regexp.MustCompile(`^#{1,6}\s`)
 
 	var headings []string
 	for _, line := range lines {
@@ -163,13 +170,6 @@ func filterParagraphs(content string) []string {
 	return result
 }
 
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			break
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
-}
+var headingPrefixRegex = regexp.MustCompile(`^#+`)
+var headingRegex = regexp.MustCompile(`^#{1,6}\s`)
+var rangeRegex = regexp.MustCompile(`^(\d+)(?:-(\d*))?$`)

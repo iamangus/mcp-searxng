@@ -1,10 +1,50 @@
 package config_test
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/iamangus/mcp-searxng/internal/config"
 )
+
+// Configuration tests must not depend on the developer's or CI runner's environment.
+func TestMain(m *testing.M) {
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.Contains(strings.ToUpper(key), "PROXY") || strings.HasPrefix(key, "MCP_") || strings.HasPrefix(key, "SEARXNG_") || strings.HasPrefix(key, "AUTH_") {
+			os.Unsetenv(key)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+func TestValidateRejectsHostlessAndCredentialURLs(t *testing.T) {
+	for _, raw := range []string{"http:", "https:///path", "https://user:secret@example.com", "https://example.com/#fragment"} {
+		if (&config.Config{SearXNGURL: raw}).Validate() == nil {
+			t.Errorf("accepted %q", raw)
+		}
+	}
+}
+
+func TestNetworkDefaultsAndAllowLists(t *testing.T) {
+	t.Setenv("MCP_HTTP_PORT", "3000")
+	t.Setenv("SEARXNG_URL", "http://localhost:8080")
+	cfg, err := config.Load()
+	if err != nil || cfg.HTTPHost != "127.0.0.1" || len(cfg.AllowedHosts) != 3 {
+		t.Fatalf("unexpected defaults: %+v, %v", cfg, err)
+	}
+	t.Setenv("MCP_ALLOWED_ORIGINS", "https://mcp.example.com/path")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("accepted origin with path")
+	}
+	t.Setenv("MCP_ALLOWED_ORIGINS", "https://mcp.example.com")
+	t.Setenv("MCP_ALLOWED_HOSTS", "mcp.example.com, localhost")
+	cfg, err = config.Load()
+	if err != nil || len(cfg.AllowedHosts) != 2 {
+		t.Fatalf("unexpected allow lists: %+v, %v", cfg, err)
+	}
+}
 
 func TestLoad_MissingHTTPPort(t *testing.T) {
 	t.Setenv("SEARXNG_URL", "http://localhost:8080")

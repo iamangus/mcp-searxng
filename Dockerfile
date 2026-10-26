@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /mcp-searxng .
 
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk update && apk upgrade && apk add --no-cache ca-certificates
 
@@ -17,6 +17,9 @@ WORKDIR /app
 COPY --from=builder /mcp-searxng /app/mcp-searxng
 
 ENV MCP_HTTP_PORT=3000
+ENV MCP_HTTP_HOST=0.0.0.0
+
+USER 65532:65532
 
 EXPOSE 3000
 

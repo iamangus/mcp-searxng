@@ -2,14 +2,14 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
-const Version = "0.10.5"
+const Version = "1.0.0"
 
 type Config struct {
 	SearXNGURL          string
@@ -25,7 +25,10 @@ type Config struct {
 	SearchHTTPSProxy    string
 	URLReaderHTTPProxy  string
 	URLReaderHTTPSProxy string
-	AIACacheTTL         time.Duration
+	HTTPHost            string
+	AllowedHosts        []string
+	AllowedOrigins      []string
+	LogLevel            string
 }
 
 func Load() (*Config, error) {
@@ -42,6 +45,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid MCP_HTTP_PORT: %s (must be 1-65535)", portStr)
 	}
 	cfg.HTTPPort = port
+	cfg.HTTPHost = firstNonEmpty(os.Getenv("MCP_HTTP_HOST"), "127.0.0.1")
+	cfg.AllowedHosts = splitList(os.Getenv("MCP_ALLOWED_HOSTS"))
+	cfg.AllowedOrigins = splitList(os.Getenv("MCP_ALLOWED_ORIGINS"))
+	cfg.LogLevel = firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")
+	if len(cfg.AllowedHosts) == 0 {
+		cfg.AllowedHosts = []string{"localhost", "127.0.0.1", "::1"}
+	}
 
 	cfg.AuthUsername = os.Getenv("AUTH_USERNAME")
 	cfg.AuthPassword = os.Getenv("AUTH_PASSWORD")
@@ -77,13 +87,6 @@ func Load() (*Config, error) {
 		os.Getenv("url_reader_https_proxy"),
 	)
 
-	cfg.AIACacheTTL = 24 * time.Hour
-	if ttlStr := os.Getenv("AIA_CACHE_TTL"); ttlStr != "" {
-		if d, err := time.ParseDuration(ttlStr); err == nil {
-			cfg.AIACacheTTL = d
-		}
-	}
-
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -93,13 +96,37 @@ func Load() (*Config, error) {
 
 func (c *Config) Validate() error {
 	var issues []string
+	if c.LogLevel != "" && c.LogLevel != "debug" && c.LogLevel != "info" && c.LogLevel != "warning" && c.LogLevel != "error" {
+		issues = append(issues, "LOG_LEVEL must be debug, info, warning or error")
+	}
 
 	if c.SearXNGURL == "" {
 		issues = append(issues, "SEARXNG_URL not set")
 	} else {
 		u, err := url.Parse(c.SearXNGURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			issues = append(issues, fmt.Sprintf("SEARXNG_URL invalid: %s", c.SearXNGURL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+			issues = append(issues, "SEARXNG_URL must be an HTTP(S) URL with a hostname and no credentials or fragment")
+		}
+	}
+	for _, raw := range []string{c.HTTPProxy, c.HTTPSProxy, c.SearchHTTPProxy, c.SearchHTTPSProxy, c.URLReaderHTTPProxy, c.URLReaderHTTPSProxy} {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			issues = append(issues, "proxy must be an HTTP(S) URL with a hostname")
+		}
+	}
+	for _, origin := range c.AllowedOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
+			issues = append(issues, "MCP_ALLOWED_ORIGINS must contain exact HTTP(S) origins without paths")
+		}
+	}
+	for _, host := range c.AllowedHosts {
+		_, ipErr := netip.ParseAddr(host)
+		if strings.ContainsAny(host, "/@*[] \t\r\n") || host == "" || (strings.Contains(host, ":") && ipErr != nil) {
+			issues = append(issues, "MCP_ALLOWED_HOSTS must contain exact hostnames or IP addresses")
 		}
 	}
 
@@ -122,7 +149,17 @@ func (c *Config) HasAuth() bool {
 }
 
 func (c *Config) HasProxy() bool {
-	return c.HTTPProxy != "" || c.HTTPSProxy != ""
+	return c.HTTPProxy != "" || c.HTTPSProxy != "" || c.SearchHTTPProxy != "" || c.SearchHTTPSProxy != "" || c.URLReaderHTTPProxy != "" || c.URLReaderHTTPSProxy != ""
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (c *Config) HasNoProxy() bool {

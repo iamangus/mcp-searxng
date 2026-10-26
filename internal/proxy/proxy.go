@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
+
+	"github.com/iamangus/mcp-searxng/internal/config"
+	"golang.org/x/net/http/httpproxy"
 )
 
 type ProxyType int
@@ -25,43 +27,13 @@ func ShouldBypassProxy(targetURL string) bool {
 		return false
 	}
 
-	if strings.TrimSpace(noProxy) == "*" {
-		return true
-	}
-
 	u, err := url.Parse(targetURL)
-	if err != nil {
+	if err != nil || u.Hostname() == "" {
 		return false
 	}
-	hostname := strings.ToLower(u.Hostname())
-
-	patterns := strings.Split(noProxy, ",")
-	for _, p := range patterns {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		p = strings.ToLower(p)
-
-		if hostname == p {
-			return true
-		}
-
-		if strings.HasPrefix(p, ".") && strings.HasSuffix(hostname, p) {
-			return true
-		}
-
-		if !strings.HasPrefix(p, ".") {
-			if hostname == p {
-				return true
-			}
-			if strings.HasSuffix(hostname, "."+p) {
-				return true
-			}
-		}
-	}
-
-	return false
+	f := (&httpproxy.Config{HTTPProxy: "http://proxy.invalid", HTTPSProxy: "http://proxy.invalid", NoProxy: noProxy}).ProxyFunc()
+	p, err := f(u)
+	return err == nil && p == nil
 }
 
 func GetProxyURL(proxyType ProxyType, targetURL string) string {
@@ -145,7 +117,7 @@ func ValidateProxyURL(proxyURL string) (string, error) {
 		return "", fmt.Errorf("invalid proxy URL: %s", proxyURL)
 	}
 
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
 		return "", fmt.Errorf("unsupported proxy protocol: %s (only HTTP and HTTPS supported)", parsed.Scheme)
 	}
 
@@ -184,4 +156,22 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// NewFunc snapshots validated configuration; no environment is consulted per request.
+// NO_PROXY follows Go's standard CIDR, IPv6, domain and host:port semantics.
+func NewFunc(cfg *config.Config, kind ProxyType) func(*http.Request) (*url.URL, error) {
+	httpProxy, httpsProxy := cfg.HTTPProxy, cfg.HTTPSProxy
+	if kind == Search {
+		httpProxy = firstNonEmpty(cfg.SearchHTTPProxy, cfg.SearchHTTPSProxy, httpProxy, httpsProxy)
+		httpsProxy = firstNonEmpty(cfg.SearchHTTPSProxy, cfg.SearchHTTPProxy, cfg.HTTPSProxy, cfg.HTTPProxy)
+	} else if kind == URLReader {
+		httpProxy = firstNonEmpty(cfg.URLReaderHTTPProxy, cfg.URLReaderHTTPSProxy, httpProxy, httpsProxy)
+		httpsProxy = firstNonEmpty(cfg.URLReaderHTTPSProxy, cfg.URLReaderHTTPProxy, cfg.HTTPSProxy, cfg.HTTPProxy)
+	} else {
+		httpProxy = firstNonEmpty(httpProxy, httpsProxy)
+		httpsProxy = firstNonEmpty(httpsProxy, cfg.HTTPProxy)
+	}
+	f := (&httpproxy.Config{HTTPProxy: httpProxy, HTTPSProxy: httpsProxy, NoProxy: cfg.NoProxy}).ProxyFunc()
+	return func(r *http.Request) (*url.URL, error) { return f(r.URL) }
 }
